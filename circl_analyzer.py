@@ -1,25 +1,24 @@
-"""Index analyzer plugin for SEKOIA.IO indicators."""
+"""Index analyzer plugin for Circl database hashes."""
 from __future__ import unicode_literals
 
 import logging
 from functools import lru_cache
-from ipaddress import ip_address
 import requests
+from Blue.wip_analyzer import CirclLookupAnalyzer
 from flask import current_app
 
 from timesketch.lib.analyzers import interface
 from timesketch.lib.analyzers import manager
 from timesketch.lib import emojis
 
-logger = logging.getLogger('timesketch.analyzers.sekoia_io')
+logger = logging.getLogger('timesketch.analyzers.circl_api')
 
+class CirclLookupAnalyzer(interface.BaseAnalyzer):
+    """Analyzer for Circl hashes."""
 
-class SekoiaIOIndicators(interface.BaseAnalyzer):
-    """Analyzer for SEKOIA.IO indicators."""
-
-    NAME = 'sekoia_io'
-    DISPLAY_NAME = 'SEKOIA.IO indicators'
-    DESCRIPTION = 'Mark events using SEKOIA.IO intel indicators'
+    NAME = 'circl'
+    DISPLAY_NAME = 'CIRCL API'
+    DESCRIPTION = 'Mark legitimate files according to the Circl database'
 
     DEPENDENCIES = frozenset(['domain'])
 
@@ -41,18 +40,17 @@ class SekoiaIOIndicators(interface.BaseAnalyzer):
             else:
                 self.search_query += " OR {}:*".format(field)
         super().__init__(index_name, sketch_id, timeline_id=timeline_id)
-        self.sekoiaio_domain = current_app.config.get('SEKOIAIO_DOMAIN', "api.sekoia.io")
-        self.sekoiaio_api_key = current_app.config.get('SEKOIAIO_API_KEY')
+        # self.circl_api = current_app.config.get('SEKOIAIO_DOMAIN', "api.sekoia.io")
 
     @lru_cache
     def find_indicator(self, indicator_value):
-        """Populates the intel attribute with entities from SEKOIA.IO."""
+        """Compare sketch hash list to the Circl database"""
         if (not indicator_value) or self.indicator_stops(indicator_value):
             return list()
         results = requests.get(
-            'https://' + self.sekoiaio_domain + '/v2/inthreat/indicators',
+            'https://hashlookup.circl.lu/lookup/',
             params={'value': indicator_value, 'type': self.indicator_type},
-            headers={'Authorization': 'Bearer {}'.format(self.sekoiaio_api_key)}
+         #   headers={'Authorization': 'Bearer {}'.format(self.sekoiaio_api_key)}
         )
         if results.status_code != 200:
             return list()
@@ -61,10 +59,10 @@ class SekoiaIOIndicators(interface.BaseAnalyzer):
 
     def mark_event(self, event, api_result):
         """Anotate an event with data from indicators and neighbors.
-        Tags with skull emoji, adds a comment to the event.
+        Tags with skull emoji.
         """
         event.add_emojis([emojis.get_emoji('SKULL')])
-        tags = ["SEKOIA.IO", "threat-intelligence"]
+        tags = ["Circl DB", "legit file"]
         for phase in api_result['kill_chain_phases']:
             tags.append("{}:{}".format(phase['kill_chain_name'], phase['phase_name']))
         for itype in api_result['indicator_types']:
@@ -72,7 +70,6 @@ class SekoiaIOIndicators(interface.BaseAnalyzer):
         if api_result['revoked']:
             tags.append('indicator_revoked')
         event.add_tags(tags)
-        event.add_comment("Link to the indicator: https://{}/intelligence/objects/{}".format(self.sekoiaio_domain, api_result["id"]))
         event.commit()
 
     def run(self):
@@ -80,8 +77,8 @@ class SekoiaIOIndicators(interface.BaseAnalyzer):
         Returns:
             String with summary of the analyzer result
         """
-        if not self.sekoiaio_domain or not self.sekoiaio_api_key:
-            return 'No SEKOIA.IO configuration settings found, aborting.'
+        if results.status_code != 200:
+         return 'No Circl information found, aborting.'
 
         events = self.event_stream(query_string=self.search_query,
                                    return_fields=self.fields_query)
@@ -105,7 +102,6 @@ class SekoiaIOIndicators(interface.BaseAnalyzer):
             return 'No indicator of type {} has been found in the timeline.'.format(self.indicator_type)
         return '{} events matched {} indicators of type {}.'.format(total_matches, len(matching_indicators), self.indicator_type)
 
-
     @staticmethod
     def get_kwargs():
         """Returns an array of indicator type of Timesketch.
@@ -115,4 +111,6 @@ class SekoiaIOIndicators(interface.BaseAnalyzer):
         return [
             {'indicator':{ 'type': 'file', 'fields': ['SHA1', 'file_hash_sha1', 'file_hash_sha256', 'SHA256', 'file_hash_md5', 'MD5']}},
         ]
-from get_kwargs('indicators')
+
+manager.AnalysisManager.register_analyzer(CirclLookupAnalyzer)
+
